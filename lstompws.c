@@ -236,8 +236,6 @@ stompws_connect (lua_State *L)
 	luaL_argcheck(L, port >= 0 && port < 65536, 3, "invalid port number");
 
 	struct lws_context_creation_info ws_args;
-	struct libwebsocket_protocols *ws_prot;
-	struct libwebsocket_context **ws_ctxt;
 
 	stompws_Connection *conn = lua_newuserdata(L, sizeof(stompws_Connection));
 	memset(conn, 0, sizeof(stompws_Connection));
@@ -461,13 +459,14 @@ static int stompws_getfd (lua_State *L)
 }
 
 static const luaL_Reg mth[] = {
-	{"__gc",     stompws_close},
-	{"close",    stompws_close},
-	{"send",     stompws_send},
-	{"subscribe",stompws_subscribe},
+	{"__gc", stompws_close},
+	{"close", stompws_close},
+	{"send", stompws_send},
+	{"subscribe", stompws_subscribe},
+	{"unsubscribe", stompws_unsubscribe},
 	{"dispatch", stompws_dispatch},
-	{"getfd",    stompws_getfd},
-	{NULL,       NULL}
+	{"getfd", stompws_getfd},
+	{NULL, NULL}
 };
 
 static const luaL_Reg lib[] = {
