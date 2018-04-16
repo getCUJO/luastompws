@@ -268,6 +268,7 @@ stompws_connect (lua_State *L)
 	ws_args.ka_interval = 10;
 	ws_args.ssl_ca_filepath = capath;
 	ws_args.user = conn;
+	ws_args.options = LWS_SERVER_OPTION_DO_SSL_GLOBAL_INIT;
 
 	conn->ws_context = lws_create_context(&ws_args);
 	if (conn->ws_context == NULL) {
