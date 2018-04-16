@@ -24,6 +24,7 @@
  * THE SOFTWARE.
  */
 
+#include <assert.h>
 #include <stdio.h>
 
 #include <lua.h>
@@ -38,11 +39,11 @@
 typedef struct stompws_Connection {
 	lua_State *L;
 
-	struct libwebsocket *ws_socket;
-	struct libwebsocket_context *ws_context;
+	struct lws *ws_socket;
+	struct lws_context *ws_context;
 	/* Array used by 'libwebsocket' library until the context is destroyed. */
-	/* See 'libwebsocket_context_destroy'. */
-	struct libwebsocket_protocols ws_protocols[2];
+	/* See 'lws_context_destroy'. */
+	struct lws_protocols ws_protocols[2];
 	int ws_connected;
 
 	void *ws_recvbuffer;
@@ -133,42 +134,38 @@ stomp_callback(message, (lua_pushstompheaders(L, msg->hdrc, msg->hdrs)),
                         (lua_pushlstring(L, msg->body, msg->body_len)));
 
 static int
-websocket_callback(struct libwebsocket_context *context,
-                   struct libwebsocket *socket,
-                   enum libwebsocket_callback_reasons reason,
+websocket_callback(struct lws *socket,
+                   enum lws_callback_reasons reason,
                    void *ignored,
                    void *dataread,
                    size_t datasize)
 {
-	stompws_Connection *conn =
-		(stompws_Connection *)libwebsocket_context_user(context);
-
 	switch (reason) {
 		case LWS_CALLBACK_CLIENT_ESTABLISHED: {
-			int err;
+			stompws_Connection *conn = (stompws_Connection *)lws_context_user(lws_get_context(socket));
 			struct stomp_hdr headers[2];
 			headers[0].key = "accept-version";
 			headers[0].val = "1.1";
 			headers[1].key = "heart-beat";
 			headers[1].val = "10000,10000";
-			err = stomp_connect(conn->stomp_session, conn->ws_socket, 2, headers);
+			int err = stomp_connect(conn->stomp_session, conn->ws_socket, 2, headers);
 			if (err) {
 				struct stomp_ctx_failure fail = { .errmsg = "connection failure" };
 				stomp_failurecallback(conn->stomp_session, &fail, conn);
 			}
 		}	break;
 		case LWS_CALLBACK_CLIENT_RECEIVE: {
-			void *buffer;
+			stompws_Connection *conn = (stompws_Connection *)lws_context_user(lws_get_context(socket));
 			if (datasize > (SIZE_MAX - conn->ws_recvbufsz))
 				datasize = SIZE_MAX - conn->ws_recvbufsz;
-			buffer = realloc(conn->ws_recvbuffer, conn->ws_recvbufsz + datasize);
+			void *buffer = realloc(conn->ws_recvbuffer, conn->ws_recvbufsz + datasize);
 			if (buffer) {
 				memcpy(buffer + conn->ws_recvbufsz, dataread, datasize);
 				conn->ws_recvbuffer = buffer;
 				conn->ws_recvbufsz += datasize;
 
-				if (libwebsockets_remaining_packet_payload(conn->ws_socket) == 0 &&
-				    libwebsocket_is_final_fragment(conn->ws_socket) != 0) {
+				if (lws_remaining_packet_payload(conn->ws_socket) == 0 &&
+				    lws_is_final_fragment(conn->ws_socket) != 0) {
 					stomp_recv_cmd(conn->stomp_session,
 					               conn->ws_recvbuffer,
 					               conn->ws_recvbufsz);
@@ -182,10 +179,12 @@ websocket_callback(struct libwebsocket_context *context,
 			}
 		} break;
 		case LWS_CALLBACK_CLIENT_CONNECTION_ERROR: {
+			stompws_Connection *conn = (stompws_Connection *)lws_context_user(lws_get_context(socket));
 			struct stomp_ctx_failure fail = { .errmsg = "connection error" };
 			stomp_failurecallback(conn->stomp_session, &fail, conn);
 		}	break;
 		case LWS_CALLBACK_PROTOCOL_DESTROY: {
+			stompws_Connection *conn = (stompws_Connection *)lws_context_user(lws_get_context(socket));
 			stomp_session_free(conn->stomp_session);
 			conn->stomp_session = NULL;
 		}	break;
@@ -261,7 +260,7 @@ stompws_connect (lua_State *L)
 	memset(&ws_args, 0, sizeof(struct lws_context_creation_info));
 	ws_args.port = CONTEXT_PORT_NO_LISTEN;
 	ws_args.protocols = conn->ws_protocols;
-	ws_args.extensions = libwebsocket_get_internal_extensions();
+	ws_args.extensions = lws_get_internal_extensions();
 	ws_args.uid = -1;
 	ws_args.gid = -1;
 	ws_args.ka_time = 5;
@@ -270,18 +269,18 @@ stompws_connect (lua_State *L)
 	ws_args.ssl_ca_filepath = capath;
 	ws_args.user = conn;
 
-	conn->ws_context = libwebsocket_create_context(&ws_args);
+	conn->ws_context = lws_create_context(&ws_args);
 	if (conn->ws_context == NULL) {
 		stomp_session_free(conn->stomp_session);
 		luaL_error(L, "unable to create WebSocket context");
 	}
 
-	conn->ws_socket = libwebsocket_client_connect(conn->ws_context, address,
+	conn->ws_socket = lws_client_connect(conn->ws_context, address,
 		(int)port, usessl ? (capath ? 1 : 2) : 0, path, hostname, origin,
 		LUASTOMPWS_WSPROT_STOMP, -1);
 	if (conn->ws_socket == NULL) {
 		/* also frees 'stomp_session', see 'websocket_callback' */
-		libwebsocket_context_destroy(conn->ws_context);
+		lws_context_destroy(conn->ws_context);
 		assert(conn->stomp_session == NULL);
 		luaL_error(L, "unable to connect");
 	}
@@ -308,7 +307,7 @@ stompws_close (lua_State *L)
 		lua_settop(L, 1);
 		conn->L = L;
 		/* also frees 'stomp_session', see 'websocket_callback' */
-		libwebsocket_context_destroy(conn->ws_context);
+		lws_context_destroy(conn->ws_context);
 		assert(conn->stomp_session == NULL);
 		conn->ws_context = NULL;
 		conn->L = NULL;
@@ -379,7 +378,7 @@ stompws_dispatch (lua_State *L)
 	conn->L = L;
 	/* shouldn't this be inside 'websocket_callback' */
 	stomp_handle_heartbeat(conn->stomp_session);
-	res = libwebsocket_service(conn->ws_context, timeout);
+	res = lws_service(conn->ws_context, timeout);
 	conn->L = NULL;
 	if (res != 0) {
 		lua_pushnil(L);
@@ -453,8 +452,7 @@ static int stompws_send (lua_State *L)
 static int stompws_getfd (lua_State *L)
 {
 	stompws_Connection *conn = tostompws(L);
-
-	lua_pushinteger(L, libwebsocket_get_socket_fd(conn->ws_socket));
+	lua_pushinteger(L, lws_get_socket_fd(conn->ws_socket));
 	return 1;
 }
 
