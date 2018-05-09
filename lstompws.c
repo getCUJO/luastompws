@@ -168,6 +168,53 @@ heartbeat_handler(lua_State *L, stompws_Connection *conn, int nresults)
 }
 
 static int
+subscribe_handler(lua_State *L, stompws_Connection *conn, int nresults)
+{
+	if (nresults < 3) {
+		fprintf(stderr, "STOMP callback wrong number of values "
+				"for subscribe command\n");
+		return -1;
+	}
+	if (!lua_isstring(L, -2)) {
+		fprintf(stderr, "STOMP callback expected string as "
+				"first value\n");
+		return -1;
+	}
+
+	struct stomp_hdr header = {
+		"destination",
+		lua_tostring(L, -nresults + 1)
+	};
+	return stomp_subscribe(conn->stomp_session, 1, &header);
+}
+
+static int
+unsubscribe_handler(lua_State *L, stompws_Connection *conn, int nresults)
+{
+	if (nresults < 4) {
+		fprintf(stderr, "STOMP callback wrong number of values "
+				"for unsubscribe command\n");
+		return -1;
+	}
+	if (!lua_isinteger(L, -3)) {
+		fprintf(stderr, "STOMP callback expected integer as "
+				"first value\n");
+		return -1;
+	}
+	if (!lua_isstring(L, -2)) {
+		fprintf(stderr, "STOMP callback expected string as "
+				"second value\n");
+		return -1;
+	}
+
+	int subscription = lua_tointeger(L, -nresults + 1);
+	struct stomp_hdr header = {
+		"destination", lua_tostring(L, -nresults + 2)
+	};
+	return stomp_unsubscribe(conn->stomp_session, subscription, 1, &header);
+}
+
+static int
 callback_handler(const char *cmd, lua_State *L,
                  stompws_Connection *conn, int nresults)
 {
@@ -177,8 +224,10 @@ callback_handler(const char *cmd, lua_State *L,
 	};
 
 	const struct entry handlers[] = {
-		{ "send"     , send_handler },
-		{ "heartbeat", heartbeat_handler },
+		{ "send"       , send_handler },
+		{ "heartbeat"  , heartbeat_handler },
+		{ "subscribe"  , subscribe_handler },
+		{ "unsubscribe", unsubscribe_handler },
 	};
 	int size = sizeof(handlers) / sizeof(*handlers);
 
@@ -577,49 +626,6 @@ tostompws(lua_State *L)
 }
 
 /*
- * connection:subscribe(name, value)
- */
-static int
-stompws_subscribe(lua_State *L)
-{
-	stompws_Connection *conn = tostompws(L);
-	struct stomp_hdr header;
-	int res;
-	header.key = luaL_checkstring(L, 2);
-	header.val = luaL_checkstring(L, 3);
-	res = stomp_subscribe(conn->stomp_session, 1, &header);
-	if (res < 0) {
-		lua_pushnil(L);
-		lua_pushstring(L, "failed");
-		return 2;
-	}
-	lua_pushinteger(L, res);
-	return 1;
-}
-
-/*
- * connection:unsubscribe(subscription, name, value)
- */
-static int
-stompws_unsubscribe(lua_State *L)
-{
-	stompws_Connection *conn = tostompws(L);
-	struct stomp_hdr header;
-	int res;
-	int subscription = luaL_checkinteger(L, 2);
-	header.key = luaL_checkstring(L, 3);
-	header.val = luaL_checkstring(L, 4);
-	res = stomp_unsubscribe(conn->stomp_session, subscription, 1, &header);
-	if (res < 0) {
-		lua_pushnil(L);
-		lua_pushstring(L, "failed");
-		return 2;
-	}
-	lua_pushinteger(L, 1);
-	return 1;
-}
-
-/*
  * connection:dispatch(fd, read, write)
  */
 static int
@@ -697,8 +703,6 @@ static const luaL_Reg mth[] = {
 	{"__gc", stompws_close},
 	{"close", stompws_close},
 	{"send", stompws_send},
-	{"subscribe", stompws_subscribe},
-	{"unsubscribe", stompws_unsubscribe},
 	{"dispatch", stompws_dispatch},
 	{"get_heartbeat", stompws_get_heartbeat},
 	{NULL, NULL}
