@@ -51,6 +51,7 @@ typedef struct stompws_Connection {
 	size_t ws_recvbufsz;
 
 	stomp_session_t *stomp_session;
+	bool close;
 } stompws_Connection;
 
 static stompws_Connection*
@@ -216,7 +217,14 @@ unsubscribe_handler(lua_State *L, stompws_Connection *conn, int nresults)
 static int
 closed_handler(lua_State *L, stompws_Connection *conn, int nresults)
 {
-	return -1;
+	conn->close = true;
+	lws_callback_on_writable(conn->ws_socket);
+	struct stomp_hdr headers[] = {
+		{ "farewell", "kthxbyebye" },
+	};
+	return stomp_disconnect(conn->stomp_session,
+	                        sizeof(headers) / sizeof(*headers),
+	                        headers);
 }
 
 static int
@@ -301,28 +309,14 @@ static int
 established_handler(lua_State *L, stompws_Connection *conn)
 {
 	assert(conn->stomp_session == NULL);
-	conn->stomp_session = stomp_session_new(conn);
-	if (conn->stomp_session == NULL) {
-		failure_callback(L, "failed creating stomp context");
-		return -1;
-	}
-	stomp_callback_set(conn->stomp_session, SCB_CONNECTED,
-			   stomp_connectedcallback);
-	stomp_callback_set(conn->stomp_session, SCB_ERROR,
-			   stomp_errorcallback);
-	stomp_callback_set(conn->stomp_session, SCB_MESSAGE,
-			   stomp_messagecallback);
+	lws_callback_on_writable(conn->ws_socket);
 
-	struct stomp_hdr headers[2] = {
-		{ "accept-version", "1.1" },
-		{ "heart-beat", "10000,10000" },
-	};
-	int err = stomp_connect(conn->stomp_session, conn->ws_socket,
-	                        2, headers);
-	if (err) {
-		failure_callback(L, "connection failure");
-		return -1;
-	}
+	lua_pushcfunction(L, msghandler);
+	lua_getuservalue(L, 1);
+	lua_pushliteral(L, "established");
+	lua_pushvalue(L, 1);
+	stomp_reportcallback(L, "established", lua_pcall(L, 2, 0, 2));
+	lua_pop(L, 1);
 	return 0;
 }
 
@@ -386,6 +380,34 @@ receive_handler(lua_State *L, stompws_Connection *conn, void *in, size_t len)
 static int
 writable_handler(lua_State *L, stompws_Connection *conn)
 {
+	if (conn->close) return -1;
+	if (!conn->stomp_session) {
+		conn->stomp_session = stomp_session_new(conn);
+		if (conn->stomp_session == NULL) {
+			failure_callback(L, "failed creating stomp context");
+			return -1;
+		}
+		stomp_callback_set(conn->stomp_session, SCB_CONNECTED,
+		                   stomp_connectedcallback);
+		stomp_callback_set(conn->stomp_session, SCB_ERROR,
+		                   stomp_errorcallback);
+		stomp_callback_set(conn->stomp_session, SCB_MESSAGE,
+		                   stomp_messagecallback);
+
+		struct stomp_hdr headers[] = {
+			{ "accept-version", "1.1" },
+			{ "heart-beat", "10000,10000" },
+		};
+		size_t n = sizeof(headers) / sizeof(*headers);
+		int err = stomp_connect(conn->stomp_session, conn->ws_socket,
+		                        n, headers);
+		if (err) {
+			failure_callback(L, "connection failure");
+			return -1;
+		}
+		return 0;
+	}
+
 	lua_pushcfunction(L, msghandler); /* error handler */
 
 	bool close = false;
@@ -580,6 +602,8 @@ stompws_connect(lua_State *L)
 	const char *path = luaL_checkstring(L, 5);
 	const char *hostname = luaL_checkstring(L, 6);
 	const char *origin = luaL_checkstring(L, 7);
+
+	conn->close = false;
 
 	struct lws_client_connect_info info = {
 		.context = conn->ws_context,
