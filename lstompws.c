@@ -41,10 +41,10 @@ typedef struct stompws_Connection {
 
 	struct lws *ws_socket;
 	struct lws_context *ws_context;
-	/* Array used by 'libwebsocket' library until the context is destroyed. */
+
+	/* Used by 'libwebsocket' library until the context is destroyed. */
 	/* See 'lws_context_destroy'. */
 	struct lws_protocols ws_protocols[2];
-	int ws_connected;
 
 	void *ws_recvbuffer;
 	size_t ws_recvbufsz;
@@ -52,13 +52,17 @@ typedef struct stompws_Connection {
 	stomp_session_t *stomp_session;
 } stompws_Connection;
 
-static void
-lua_pushstompheaders(lua_State *L, size_t count, const struct stomp_hdr *headers)
+static stompws_Connection*
+tolstompws(lua_State *L)
 {
-	size_t i;
+	return luaL_checkudata(L, 1, LUASTOMPWS_METATAB_CONN);
+}
 
+static void
+pushstompheaders(lua_State *L, size_t count, const struct stomp_hdr *headers)
+{
 	lua_createtable(L, 0, count);
-	for (i = 0; i < count; ++i) {
+	for (size_t i = 0; i < count; ++i) {
 		lua_pushstring(L, headers[i].val);
 		lua_setfield(L, -2, headers[i].key);
 	}
@@ -68,13 +72,14 @@ lua_pushstompheaders(lua_State *L, size_t count, const struct stomp_hdr *headers
 ** Message handler used to run all chunks
 */
 static int
-msghandler (lua_State *L)
+msghandler(lua_State *L)
 {
 	const char *msg = lua_tostring(L, 1);
 
 	if (msg == NULL) {  /* is error object not a string? */
-		if (luaL_callmeta(L, 1, "__tostring") &&  /* does it have a metamethod */
-		    lua_type(L, -1) == LUA_TSTRING)  /* that produces a string? */
+		/* does it have a metamethod AND does it produce a string? */
+		if (luaL_callmeta(L, 1, "__tostring") &&
+		    lua_type(L, -1) == LUA_TSTRING)
 			return 1;  /* that is the message */
 		else
 			msg = lua_pushfstring(L, "(error object is a %s value)",
@@ -95,16 +100,15 @@ stomp_reportcallback(lua_State *L, const char *name, int status)
 	return status;
 }
 
-#define stomp_callback(name, pusharg3, pusharg4)                   \
-	static void                                                      \
-	stomp_##name##callback(stomp_session_t *session,                 \
-	                      void *msg_pointer,                         \
-	                      void *conn_pointer)                        \
-	{                                                                \
-		struct stomp_ctx_##name *msg = (struct stomp_ctx_##name *)msg_pointer; \
-		stompws_Connection *conn = (stompws_Connection *)conn_pointer; \
+#define stomp_callback(name, pusharg3, pusharg4)                               \
+	static void                                                            \
+	stomp_##name##callback(stomp_session_t *session,                       \
+	                      void *msg_pointer,                               \
+	                      void *conn_pointer)                              \
+	{                                                                      \
+		struct stomp_ctx_##name *msg = msg_pointer;                    \
+		stompws_Connection *conn = conn_pointer;                       \
 		lua_State *L = conn->L;                                        \
-		                                                               \
 		assert(L != NULL);                                             \
 		assert(luaL_checkudata(L, 1, LUASTOMPWS_METATAB_CONN));        \
 		lua_pushcfunction(L, msghandler);   /* push error handler */   \
@@ -124,13 +128,13 @@ stomp_callback(failure, (lua_pushnil(L)),
                         (lua_pushstring(L, msg->errmsg)));
 stomp_callback(user, (lua_pushnil(L)),
                      (lua_pushnil(L)));
-stomp_callback(connected, (lua_pushstompheaders(L, msg->hdrc, msg->hdrs)),
+stomp_callback(connected, (pushstompheaders(L, msg->hdrc, msg->hdrs)),
                           (lua_pushnil(L)));
-stomp_callback(receipt, (lua_pushstompheaders(L, msg->hdrc, msg->hdrs)),
+stomp_callback(receipt, (pushstompheaders(L, msg->hdrc, msg->hdrs)),
                         (lua_pushnil(L)));
-stomp_callback(error, (lua_pushstompheaders(L, msg->hdrc, msg->hdrs)),
+stomp_callback(error, (pushstompheaders(L, msg->hdrc, msg->hdrs)),
                       (lua_pushlstring(L, msg->body, msg->body_len)));
-stomp_callback(message, (lua_pushstompheaders(L, msg->hdrc, msg->hdrs)),
+stomp_callback(message, (pushstompheaders(L, msg->hdrc, msg->hdrs)),
                         (lua_pushlstring(L, msg->body, msg->body_len)));
 
 static int
@@ -142,7 +146,7 @@ websocket_callback(struct lws *socket,
 {
 	switch (reason) {
 		case LWS_CALLBACK_CLIENT_ESTABLISHED: {
-			stompws_Connection *conn = (stompws_Connection *)lws_context_user(lws_get_context(socket));
+			stompws_Connection *conn = lws_context_user(lws_get_context(socket));
 			struct stomp_hdr headers[2];
 			headers[0].key = "accept-version";
 			headers[0].val = "1.1";
@@ -155,7 +159,7 @@ websocket_callback(struct lws *socket,
 			}
 		}	break;
 		case LWS_CALLBACK_CLIENT_RECEIVE: {
-			stompws_Connection *conn = (stompws_Connection *)lws_context_user(lws_get_context(socket));
+			stompws_Connection *conn = lws_context_user(lws_get_context(socket));
 			if (datasize > (SIZE_MAX - conn->ws_recvbufsz))
 				datasize = SIZE_MAX - conn->ws_recvbufsz;
 			void *buffer = realloc(conn->ws_recvbuffer, conn->ws_recvbufsz + datasize);
@@ -179,12 +183,12 @@ websocket_callback(struct lws *socket,
 			}
 		} break;
 		case LWS_CALLBACK_CLIENT_CONNECTION_ERROR: {
-			stompws_Connection *conn = (stompws_Connection *)lws_context_user(lws_get_context(socket));
+			stompws_Connection *conn = lws_context_user(lws_get_context(socket));
 			struct stomp_ctx_failure fail = { .errmsg = "connection error" };
 			stomp_failurecallback(conn->stomp_session, &fail, conn);
 		}	break;
 		case LWS_CALLBACK_PROTOCOL_DESTROY: {
-			stompws_Connection *conn = (stompws_Connection *)lws_context_user(lws_get_context(socket));
+			stompws_Connection *conn = lws_context_user(lws_get_context(socket));
 			stomp_session_free(conn->stomp_session);
 			conn->stomp_session = NULL;
 		}	break;
@@ -203,23 +207,22 @@ stomp_CallbackInfo stomp_SupportedCallbacks[] = {
 	{ 'e', SCB_ERROR    , stomp_errorcallback },
 	{ 'm', SCB_MESSAGE  , stomp_messagecallback },
 	{ 'r', SCB_RECEIPT  , stomp_receiptcallback },
-	{ 'u', SCB_USER     , stomp_usercallback },
 	{ 0  , 0            , NULL }
 };
 
 /*
- connection = stompws.connect(usessl,
-                              address,
-                              port,
-                              path,
-                              hostname,
-                              origin,
-                              callback, -- function (kind, headers, message) end
-                              cbflags, -- "cemru"
-                              [capath])
+ * connection = stompws.connect(usessl,
+ *                              address,
+ *                              port,
+ *                              path,
+ *                              hostname,
+ *                              origin,
+ *                              callback, -- function (kind, ...) end
+ *                              cbflags, -- "cemr"
+ *                              [capath])
  */
 static int
-stompws_connect (lua_State *L)
+stompws_connect(lua_State *L)
 {
 	stomp_CallbackInfo *cbinfo;
 	int usessl = lua_toboolean(L, 1);
@@ -236,11 +239,16 @@ stompws_connect (lua_State *L)
 
 	struct lws_context_creation_info ws_args;
 
-	stompws_Connection *conn = lua_newuserdata(L, sizeof(stompws_Connection));
+	stompws_Connection *conn =
+		lua_newuserdata(L, sizeof(stompws_Connection));
 	memset(conn, 0, sizeof(stompws_Connection));
 	lua_pushvalue(L, 7);  /* push callback function */
-	lua_setuservalue(L, -2);  /* associate the callback to the conn. userdata */
-	lua_replace(L, 1);  /* prepare stack for eventual callback */
+	lua_setuservalue(L, -2);  /* associate it to the conn. userdata */
+
+	luaL_getmetatable(L, LUASTOMPWS_METATAB_CONN);
+	lua_setmetatable(L, -2);
+
+	lua_replace(L, 1);  /* replaces calback function with conn. userdata */
 
 	conn->L = L;
 
@@ -260,7 +268,7 @@ stompws_connect (lua_State *L)
 	memset(&ws_args, 0, sizeof(struct lws_context_creation_info));
 	ws_args.port = CONTEXT_PORT_NO_LISTEN;
 	ws_args.protocols = conn->ws_protocols;
-	ws_args.extensions = lws_get_internal_extensions();
+	ws_args.extensions = NULL;
 	ws_args.uid = -1;
 	ws_args.gid = -1;
 	ws_args.ka_time = 5;
@@ -276,9 +284,20 @@ stompws_connect (lua_State *L)
 		luaL_error(L, "unable to create WebSocket context");
 	}
 
-	conn->ws_socket = lws_client_connect(conn->ws_context, address,
-		(int)port, usessl ? (capath ? 1 : 2) : 0, path, hostname, origin,
-		LUASTOMPWS_WSPROT_STOMP, -1);
+	struct lws_client_connect_info info = {
+		.context = conn->ws_context,
+		.address = address,
+		.port = (int)port,
+		.ssl_connection = usessl ? (capath ? 1 : 2) : 0,
+		.path = path,
+		.host = hostname,
+		.origin = origin,
+		.protocol = LUASTOMPWS_WSPROT_STOMP,
+		.ietf_version_or_minus_one = -1, /* default protocol */
+		.userdata = NULL,
+	};
+	conn->ws_socket = lws_client_connect_via_info(&info);
+
 	if (conn->ws_socket == NULL) {
 		/* also frees 'stomp_session', see 'websocket_callback' */
 		lws_context_destroy(conn->ws_context);
@@ -288,49 +307,46 @@ stompws_connect (lua_State *L)
 
 	conn->L = NULL;
 
-	lua_settop(L, 1);
-	luaL_getmetatable(L, LUASTOMPWS_METATAB_CONN);
-	lua_setmetatable(L, -2);
+	lua_pushvalue(L, 1);
 	return 1;
 }
 
-#define tolstompws(L)	((stompws_Connection *) \
-	luaL_checkudata(L, 1, LUASTOMPWS_METATAB_CONN))
-
 static int
-stompws_close (lua_State *L)
+stompws_close(lua_State *L)
 {
 	stompws_Connection *conn = tolstompws(L);
 
 	int active = (conn->ws_context != NULL);
 	if (active) {
-		/* prepare stack for eventual callback */
-		lua_settop(L, 1);
-		conn->L = L;
 		/* also frees 'stomp_session', see 'websocket_callback' */
+		conn->L = L;
 		lws_context_destroy(conn->ws_context);
+		conn->L = NULL;
+
 		assert(conn->stomp_session == NULL);
 		conn->ws_context = NULL;
-		conn->L = NULL;
 	}
 	lua_pushboolean(L, active);
 	return 1;
 }
 
-static stompws_Connection *tostompws (lua_State *L) {
+static stompws_Connection*
+tostompws(lua_State *L)
+{
 	stompws_Connection *conn = tolstompws(L);
-
-	if (conn->ws_context == NULL)
+	if (conn->ws_socket == NULL) {
 		luaL_error(L, "attempt to use a closed STOMP Web Socket");
+	}
 	return conn;
 }
 
-/* connection:subscribe(name, value) */
+/*
+ * connection:subscribe(name, value)
+ */
 static int
-stompws_subscribe (lua_State *L)
+stompws_subscribe(lua_State *L)
 {
-	stompws_Connection *conn = tolstompws(L);
-
+	stompws_Connection *conn = tostompws(L);
 	struct stomp_hdr header;
 	int res;
 	header.key = luaL_checkstring(L, 2);
@@ -345,12 +361,13 @@ stompws_subscribe (lua_State *L)
 	return 1;
 }
 
-/* connection:unsubscribe(subscription, name, value) */
+/*
+ * connection:unsubscribe(subscription, name, value)
+ */
 static int
-stompws_unsubscribe (lua_State *L)
+stompws_unsubscribe(lua_State *L)
 {
-	stompws_Connection *conn = tolstompws(L);
-
+	stompws_Connection *conn = tostompws(L);
 	struct stomp_hdr header;
 	int res;
 	int subscription = luaL_checkinteger(L, 2);
@@ -366,9 +383,11 @@ stompws_unsubscribe (lua_State *L)
 	return 1;
 }
 
-/* connection:dispatch([timeout]) */
+/*
+ * connection:dispatch([timeout])
+ */
 static int
-stompws_dispatch (lua_State *L)
+stompws_dispatch(lua_State *L)
 {
 	int res;
 	stompws_Connection *conn = tolstompws(L);
@@ -392,8 +411,11 @@ stompws_dispatch (lua_State *L)
 
 #define USUAL_HEADER_COUNT	1
 
-/* connection:send(headers, body) */
-static int stompws_send (lua_State *L)
+/*
+ * connection:send(headers, body)
+ */
+static int
+stompws_send(lua_State *L)
 {
 	stompws_Connection *conn = tolstompws(L);
 	size_t bodysz;
@@ -429,11 +451,11 @@ static int stompws_send (lua_State *L)
 	}
 
 	/*
-	 * libstomp bug: this call might fail silently if the socket buffer is full,
-	 *               and it will leave a partial frame written in the output
-	 *               stream, which might be unrecoverable and will require the
-	 *               application to close and reopen the STOMP connection in
-	 *               order to be able to send more messages.
+	 * stomp bug: this might fail silently if the socket buffer is full,
+	 *            and it will leave a partial frame written in the output
+	 *            stream, which might be unrecoverable and will require the
+	 *            application to close and reopen the STOMP connection in
+	 *            order to be able to send more messages.
 	 */
 	res = stomp_send(conn->stomp_session, i, headers, body, bodysz);
 
@@ -449,8 +471,11 @@ static int stompws_send (lua_State *L)
 	return 1;
 }
 
-/* filedesno = connection:getfd() */
-static int stompws_getfd (lua_State *L)
+/*
+ * filedesno = connection:getfd()
+ */
+static int
+stompws_getfd(lua_State *L)
 {
 	stompws_Connection *conn = tostompws(L);
 	lua_pushinteger(L, lws_get_socket_fd(conn->ws_socket));
@@ -473,7 +498,8 @@ static const luaL_Reg lib[] = {
 	{NULL,      NULL}
 };
 
-LUALIB_API int luaopen_stompws (lua_State *L)
+LUALIB_API int
+luaopen_stompws(lua_State *L)
 {
 	/* create connection class */
 	luaL_newmetatable(L, LUASTOMPWS_METATAB_CONN);
