@@ -96,10 +96,17 @@ stomp_reportcallback(lua_State *L, const char *name, int status)
 {
 	if (status != LUA_OK) {
 		const char *errmsg = lua_tostring(L, -1);
-		fprintf(stderr, "STOMP %s callback error: %s", name, errmsg);
+		fprintf(stderr, "STOMP %s callback error: %s\n", name, errmsg);
 		lua_pop(L, 1);  /* remove message */
 	}
 	return status;
+}
+
+static int
+push_errorhandler(lua_State *L)
+{
+	lua_pushcfunction(L, msghandler);
+	return lua_gettop(L);
 }
 
 #define STOMP_CALLBACK(FUNC, NAME, BODY)                                       \
@@ -109,14 +116,14 @@ FUNC(stomp_session_t *session, void *msg_ptr, void *conn_ptr)                  \
 	struct stomp_ctx_message *msg = msg_ptr;                               \
 	stompws_Connection *conn = conn_ptr;                                   \
 	lua_State *L = conn->L;                                                \
-	lua_pushcfunction(L, msghandler);   /* push error handler */           \
+	int errhandlerpos = push_errorhandler(L);                              \
 	lua_getuservalue(L, 1);   /* push callback function */                 \
 	lua_pushliteral(L, NAME);                                              \
 	lua_pushvalue(L, 1);   /* push the connection */                       \
 	pushstompheaders(L, msg->hdrc, msg->hdrs);                             \
 	if (BODY) lua_pushlstring(L, msg->body, msg->body_len);                \
 	else      lua_pushnil(L);                                              \
-	stomp_reportcallback(L, NAME, lua_pcall(L, 4, 0, -6));                 \
+	stomp_reportcallback(L, NAME, lua_pcall(L, 4, 0, errhandlerpos));      \
 	lua_pop(L, 1);                                                         \
 }
 
@@ -279,10 +286,10 @@ send_callback(lua_State *L, stompws_Connection *conn, int nresults)
 	const char *cmd = lua_tostring(L, -nresults);
 	int res = callback_handler(cmd, L, conn, nresults);
 
-	lua_pushcfunction(L, msghandler);
-	lua_pushvalue(L, -2); // -1 - 1 (because we pushed msghandler)
+	int errhandlerpos = push_errorhandler(L);
+	lua_pushvalue(L, -2); // -1 - 1 (because we pushed the error handler)
 	lua_pushinteger(L, res);
-	int status = lua_pcall(L, 1, 0, -3);
+	int status = lua_pcall(L, 1, 0, errhandlerpos);
 	if (status != LUA_OK) {
 		const char *errmsg = lua_tostring(L, -1);
 		fprintf(stderr, "STOMP complete callback error: %s\n", errmsg);
@@ -296,12 +303,12 @@ send_callback(lua_State *L, stompws_Connection *conn, int nresults)
 static void
 failure_callback(lua_State *L, const char *msg)
 {
-	lua_pushcfunction(L, msghandler);
+	int errhandlerpos = push_errorhandler(L);
 	lua_getuservalue(L, 1);   /* push callback function */
 	lua_pushliteral(L, "failure");
 	lua_pushvalue(L, 1);   /* push the connection */
 	lua_pushstring(L, msg);
-	stomp_reportcallback(L, "failure", lua_pcall(L, 3, 0, 2));
+	stomp_reportcallback(L, "failure", lua_pcall(L, 3, 0, errhandlerpos));
 	lua_pop(L, 1);
 }
 
@@ -311,11 +318,11 @@ established_handler(lua_State *L, stompws_Connection *conn)
 	assert(conn->stomp_session == NULL);
 	lws_callback_on_writable(conn->ws_socket);
 
-	lua_pushcfunction(L, msghandler);
+	int errhandlerpos = push_errorhandler(L);
 	lua_getuservalue(L, 1);
 	lua_pushliteral(L, "established");
 	lua_pushvalue(L, 1);
-	stomp_reportcallback(L, "established", lua_pcall(L, 2, 0, 2));
+	stomp_reportcallback(L, "established", lua_pcall(L, 2, 0, errhandlerpos));
 	lua_pop(L, 1);
 	return 0;
 }
@@ -330,7 +337,7 @@ close_handler(lua_State *L, stompws_Connection *conn, bool error)
 	}
 	conn->ws_socket = NULL;
 
-	lua_pushcfunction(L, msghandler);
+	int errhandlerpos = push_errorhandler(L);
 	lua_getuservalue(L, 1);
 	lua_pushliteral(L, "closed");
 	lua_pushvalue(L, 1);
@@ -339,18 +346,18 @@ close_handler(lua_State *L, stompws_Connection *conn, bool error)
 	} else {
 		lua_pushnil(L);
 	}
-	stomp_reportcallback(L, "closed", lua_pcall(L, 3, 0, 2));
+	stomp_reportcallback(L, "closed", lua_pcall(L, 3, 0, errhandlerpos));
 	lua_pop(L, 1);
 }
 
 static int
 receive_handler(lua_State *L, stompws_Connection *conn, void *in, size_t len)
 {
-	lua_pushcfunction(L, msghandler);
+	int errhandlerpos = push_errorhandler(L);
 	lua_getuservalue(L, 1);
 	lua_pushliteral(L, "receive");
 	lua_pushvalue(L, 1);
-	stomp_reportcallback(L, "receive", lua_pcall(L, 2, 0, 2));
+	stomp_reportcallback(L, "receive", lua_pcall(L, 2, 0, errhandlerpos));
 	lua_pop(L, 1);
 
 	if (len > (SIZE_MAX - conn->ws_recvbufsz)) {
@@ -408,15 +415,14 @@ writable_handler(lua_State *L, stompws_Connection *conn)
 		return 0;
 	}
 
-	lua_pushcfunction(L, msghandler); /* error handler */
-
 	bool close = false;
-	int level = lua_gettop(L);
+	int errhandlerpos = push_errorhandler(L);
 
+	int level = lua_gettop(L);
 	lua_getuservalue(L, 1); /* callback function */
 	lua_pushliteral(L, "send");
 	lua_pushvalue(L, 1); /* the connection */
-	int status = lua_pcall(L, 2, LUA_MULTRET, 2);
+	int status = lua_pcall(L, 2, LUA_MULTRET, errhandlerpos);
 	if (status == LUA_OK) {
 		int nresults = lua_gettop(L) - level;
 		close = send_callback(L, conn, nresults);
@@ -435,7 +441,7 @@ pollfd_handler(lua_State *L, stompws_Connection *conn,
                enum lws_callback_reasons reason,
                const struct lws_pollargs *arg)
 {
-	lua_pushcfunction(L, msghandler); /* error handler */
+	int errhandlerpos = push_errorhandler(L);
 	lua_getuservalue(L, 1);   /* push callback function */
 
 	const int level = lua_gettop(L);
@@ -466,7 +472,7 @@ pollfd_handler(lua_State *L, stompws_Connection *conn,
 	}
 
 	const int nargs = lua_gettop(L) - level;
-	stomp_reportcallback(L, "pollfd", lua_pcall(L, nargs, 0, 2));
+	stomp_reportcallback(L, "pollfd", lua_pcall(L, nargs, 0, errhandlerpos));
 	lua_pop(L, 1);
 }
 
