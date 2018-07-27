@@ -764,6 +764,8 @@ static const luaL_Reg lib[] = {
 LUALIB_API int
 luaopen_stompws(lua_State *L)
 {
+	lws_set_log_level(0, NULL);
+
 	/* create connection class */
 	luaL_newmetatable(L, LUASTOMPWS_METATAB_CONN);
 	lua_pushvalue(L, -1);  /* push metatable */
