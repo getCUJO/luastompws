@@ -1,4 +1,4 @@
-/* 
+/*
  * Copyright (c) 2018 - 2019, CUJO LLC.
  * 
  * Licensed under the MIT license:
@@ -533,7 +533,7 @@ websocket_callback(struct lws *wsi, enum lws_callback_reasons reason,
 }
 
 /*
- * ws = stompws.new(callback, [capath])
+ * ws = stompws.new(callback, [capath], [interface])
  * callback : function (kind, headers, message) end
  */
 static int
@@ -608,11 +608,12 @@ stompws_connect(lua_State *L)
 	const char *path = luaL_checkstring(L, 5);
 	const char *hostname = luaL_checkstring(L, 6);
 	const char *origin = luaL_checkstring(L, 7);
-
+	const char *iface = luaL_optstring(L, 8, NULL);
 	conn->close = false;
 
 	struct lws_client_connect_info info = {
 		.context = conn->ws_context,
+		.iface = iface,
 		.address = address,
 		.port = (int)port,
 		.ssl_connection = (int)usessl,
