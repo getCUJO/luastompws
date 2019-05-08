@@ -1,29 +1,3 @@
-/*
- * Copyright (c) 2018 - 2019, CUJO LLC.
- * 
- * Licensed under the MIT license:
- * 
- *     http://www.opensource.org/licenses/mit-license.php
- * 
- * Permission is hereby granted, free of charge, to any person obtaining a copy
- * of this software and associated documentation files (the "Software"), to deal
- * in the Software without restriction, including without limitation the rights
- * to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
- * copies of the Software, and to permit persons to whom the Software is
- * furnished to do so, subject to the following conditions:
- * 
- * The above copyright notice and this permission notice shall be included in
- * all copies or substantial portions of the Software.
- * 
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
- * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
- * AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
- * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
- * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
- * THE SOFTWARE.
- */
-
 #include <stdbool.h>
 #include <assert.h>
 #include <stdio.h>
@@ -128,6 +102,7 @@ FUNC(stomp_session_t *session, void *msg_ptr, void *conn_ptr)                  \
 }
 
 STOMP_CALLBACK(stomp_connectedcallback, "connected", false)
+//STOMP_CALLBACK(stomp_receiptcallback  , "receipt"  , false)
 STOMP_CALLBACK(stomp_errorcallback    , "error"    , true)
 STOMP_CALLBACK(stomp_messagecallback  , "message"  , true)
 
@@ -400,6 +375,8 @@ writable_handler(lua_State *L, stompws_Connection *conn)
 		                   stomp_errorcallback);
 		stomp_callback_set(conn->stomp_session, SCB_MESSAGE,
 		                   stomp_messagecallback);
+		//stomp_callback_set(conn->stomp_session, SCB_RECEIPT,
+		//                   stomp_receiptcallback);
 
 		struct stomp_hdr headers[] = {
 			{ "accept-version", "1.1" },
@@ -490,44 +467,44 @@ websocket_callback(struct lws *wsi, enum lws_callback_reasons reason,
 	assert(luaL_checkudata(L, 1, LUASTOMPWS_METATAB_CONN));
 
 	switch (reason) {
-		case LWS_CALLBACK_CLIENT_ESTABLISHED:
-			return established_handler(L, conn);
-		case LWS_CALLBACK_CLOSED:
-		case LWS_CALLBACK_CLIENT_CONNECTION_ERROR:
-			close_handler(L, conn, reason != LWS_CALLBACK_CLOSED);
-			break;
-		case LWS_CALLBACK_WS_PEER_INITIATED_CLOSE:
-			fprintf(stderr, "websocket_callback peer closed\n");
-			break;
-		case LWS_CALLBACK_CLIENT_RECEIVE:
-			return receive_handler(L, conn, in, len);
-		case LWS_CALLBACK_CLIENT_WRITEABLE:
-			return writable_handler(L, conn);
-		case LWS_CALLBACK_ADD_POLL_FD:
-		case LWS_CALLBACK_DEL_POLL_FD:
-		case LWS_CALLBACK_CHANGE_MODE_POLL_FD:
-			pollfd_handler(L, conn, reason,
-			               (const struct lws_pollargs *)in);
-			break;
-		case LWS_CALLBACK_PROTOCOL_INIT:
-		case LWS_CALLBACK_PROTOCOL_DESTROY:
-		case LWS_CALLBACK_CLOSED_CLIENT_HTTP:
-		case LWS_CALLBACK_GET_THREAD_ID:
-		case LWS_CALLBACK_CLIENT_FILTER_PRE_ESTABLISH:
-		case LWS_CALLBACK_CLIENT_APPEND_HANDSHAKE_HEADER:
-		case LWS_CALLBACK_OPENSSL_LOAD_EXTRA_CLIENT_VERIFY_CERTS:
-		case LWS_CALLBACK_OPENSSL_PERFORM_SERVER_CERT_VERIFICATION:
-		case LWS_CALLBACK_WSI_CREATE:
-		case LWS_CALLBACK_WSI_DESTROY:
-		case LWS_CALLBACK_LOCK_POLL:
-		case LWS_CALLBACK_UNLOCK_POLL:
-			break;
-		default:
-			fprintf(stderr, "websocket_callback unhandled "
-			                "socket:%p reason:%d user:%p in:%p "
-			                "len:%llu\n",
-			        wsi, reason, user, in, len);
-			break;
+	case LWS_CALLBACK_CLIENT_ESTABLISHED:
+		return established_handler(L, conn);
+	case LWS_CALLBACK_CLOSED:
+	case LWS_CALLBACK_CLIENT_CONNECTION_ERROR:
+		close_handler(L, conn, reason != LWS_CALLBACK_CLOSED);
+		break;
+	case LWS_CALLBACK_WS_PEER_INITIATED_CLOSE:
+		fprintf(stderr, "websocket_callback peer closed\n");
+		break;
+	case LWS_CALLBACK_CLIENT_RECEIVE:
+		return receive_handler(L, conn, in, len);
+	case LWS_CALLBACK_CLIENT_WRITEABLE:
+		return writable_handler(L, conn);
+	case LWS_CALLBACK_ADD_POLL_FD:
+	case LWS_CALLBACK_DEL_POLL_FD:
+	case LWS_CALLBACK_CHANGE_MODE_POLL_FD:
+		pollfd_handler(L, conn, reason,
+			       (const struct lws_pollargs *)in);
+		break;
+	case LWS_CALLBACK_PROTOCOL_INIT:
+	case LWS_CALLBACK_PROTOCOL_DESTROY:
+	case LWS_CALLBACK_CLOSED_CLIENT_HTTP:
+	case LWS_CALLBACK_GET_THREAD_ID:
+	case LWS_CALLBACK_CLIENT_FILTER_PRE_ESTABLISH:
+	case LWS_CALLBACK_CLIENT_APPEND_HANDSHAKE_HEADER:
+	case LWS_CALLBACK_OPENSSL_LOAD_EXTRA_CLIENT_VERIFY_CERTS:
+	case LWS_CALLBACK_OPENSSL_PERFORM_SERVER_CERT_VERIFICATION:
+	case LWS_CALLBACK_WSI_CREATE:
+	case LWS_CALLBACK_WSI_DESTROY:
+	case LWS_CALLBACK_LOCK_POLL:
+	case LWS_CALLBACK_UNLOCK_POLL:
+		break;
+	default:
+		fprintf(stderr, "websocket_callback unhandled "
+				"socket:%p reason:%d user:%p in:%p "
+				"len:%llu\n",
+			wsi, reason, user, in, len);
+		break;
 	}
 	return 0;
 }
@@ -681,6 +658,8 @@ stompws_dispatch(lua_State *L)
 {
 	stompws_Connection *conn = tolstompws(L);
 
+	if (conn->L) luaL_error(L, "cannot call this from within callback");
+
 	if (lua_gettop(L) == 1) {
 		conn->L = L;
 		lws_service_fd(conn->ws_context, NULL);
@@ -731,6 +710,29 @@ stompws_send(lua_State *L)
 }
 
 /*
+ * connection:rx_flow_control(boolean)
+ */
+static int
+stompws_rx_flow_control(lua_State *L)
+{
+	stompws_Connection *conn = tolstompws(L);
+	if (!conn->ws_socket) luaL_error(L, "socket disconnected");
+	const bool enable = lua_toboolean(L, 2);
+
+	/* prepare stack for eventual callback */
+	lua_settop(L, 1);
+
+	lua_State *L_backup = conn->L;
+	conn->L = L;
+	int err = lws_rx_flow_control(conn->ws_socket, enable);
+	conn->L = L_backup;
+
+	if (err) luaL_error(L, "rx flow control failed");
+
+	return 0;
+}
+
+/*
  * connection:get_heartbeat()
  */
 static int
@@ -752,6 +754,7 @@ static const luaL_Reg mth[] = {
 	{"connect", stompws_connect},
 	{"is_connected", stompws_is_connected},
 	{"send", stompws_send},
+	{"rx_flow_control", stompws_rx_flow_control},
 	{"dispatch", stompws_dispatch},
 	{"get_heartbeat", stompws_get_heartbeat},
 	{NULL, NULL}
